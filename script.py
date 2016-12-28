@@ -65,8 +65,8 @@ for team in teams_data['teams']:
 		for td in tds:
 			# here is the magic part, take all of the actual statistical data(FTs, FGs, 2PT, 3TP...) from 'Totals' category
 			if 'Totals' in td.string:
-				otherStats = td.parent
-				for stat in otherStats:
+				other_stats = td.parent
+				for stat in other_stats:
 					if stat.string == 'Totals':
 						continue
 					elif stat.string.find(':') != -1:
