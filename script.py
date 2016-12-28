@@ -3,81 +3,87 @@ import requests
 from openpyxl import Workbook
 from bs4 import BeautifulSoup
 
-url = 'http://www.euroleague.net/competition/teams'
-r = requests.get(url)
+base_url = 'http://www.euroleague.net'
+teams_url = base_url + '/competition/teams'
+r = requests.get(teams_url)
 
-soup = BeautifulSoup(r.text, "html.parser")
+soup = BeautifulSoup(r.text, 'html.parser')
 tables = soup.find_all('ul', class_='nav-teams nav-teams-16')
-
-teamsData = {   
+# get data for all teams
+teams_data = {   
 				'teams' : [], 
 				'urls' : []
 			}
 for table in tables:
 	lis = table.find_all('li')
 	for li in lis:
-		anchor_tag = li.a
-		teamsData['teams'].append(anchor_tag["title"])
-		teamsData['urls'].append('http://www.euroleague.net' + str(anchor_tag["href"]))
+		teams_data['teams'].append(li.a['title'])
+		teams_data['urls'].append(base_url + str(li.a['href']))
 	
-# write 'Teams' sheet in xlsx file
+# create a xlsx file with a sheet 'Teams'
 wb = Workbook()
 ws = wb.active
 ws.title = 'Teams'
 ws.cell(row = 1, column = 1).value = 'Team'
-for cell in range(0, len(teamsData['teams'])):
-	ws.cell(row = cell + 2, column = 1).value = teamsData['teams'][cell]
-	ws.cell(row = cell + 2, column = 1).hyperlink = teamsData['teams'][cell]
+for cell in range(len(teams_data['teams'])):
+	ws.cell(row = cell + 2, column = 1).value = teams_data['teams'][cell]
+	ws.cell(row = cell + 2, column = 1).hyperlink = teams_data['teams'][cell]
 
-for team in teamsData['teams']:
+# loop all teams and write them in different sheet
+for team in teams_data['teams']:
 	wb.create_sheet(team)
-	index = teamsData['teams'].index(team)
-	r = requests.get(str(teamsData['urls'][index]))
-	soup = BeautifulSoup(r.text, "html.parser")
-	divs = soup.find_all('div', class_='item player')
-	
-	playerStats = ['Name', 'Jersey Number', 'Position', 'Country', 'Year of Birth', 'Height',
+	player_stats = ['Name', 'Jersey Number', 'Position', 'Country', 'Year of Birth', 'Height',
 				   'G', 'GS', 'MIN', 'PT', '2FGM', '2FGA', '3FGM', '3FGA', 'FTM', 'FTA',
 				   'ORB', 'DRB', 'TRB', 'ASS', 'STL', 'TO', 'BF', 'BA', 'FC', 'FM', 'PIR']
+	# first row is a description about the data for each team
+	for item in range(len(player_stats)):
+		wb[team].cell(row = 1, column = item + 1).value = player_stats[item]
 	
-	for item in range(len(playerStats)):
-		wb[team].cell(row = 1, column = item + 1).value = playerStats[item]
-	
+	team_index = teams_data['teams'].index(team)
+	r = requests.get(teams_data['urls'][team_index])
+	soup = BeautifulSoup(r.text, 'html.parser')
+	divs = soup.find_all('div', class_='item player')
+	# the actual statistical data for players of a team starts at 2nd row
 	row = 2
 	print('Processing ' + team),
 	for div in divs:
-		name = div.find('div', class_='name').a
-		playerName = name.string
-		playerUrl = 'http://www.euroleague.net' + name['href']
-		wb[team].cell(row = row, column = 1).value = playerName
-		wb[team].cell(row = row, column = 1).hyperlink = playerUrl
-		data = div.find('div', class_='data')
-		wb[team].cell(row = row, column = 2, value = data.find('span', class_='dorsal').string)
-		wb[team].cell(row = row, column = 3, value = data.find('span', class_='position').string)
-		wb[team].cell(row = row, column = 4, value = data.find('span', class_='country').string)
-		wb[team].cell(row = row, column = 5, value = data.find('span', class_='birth').string)
-		wb[team].cell(row = row, column = 6, value = data.find('span', class_='height').string[-4:])
-		column = 7
-		playerReq = requests.get(playerUrl)
-		playerHtml = BeautifulSoup(playerReq.text, "html.parser")	
-		tds = playerHtml.find_all('td', class_='PlayerTitleColumn')
-		for td in tds:		
-			if td.string == 'Totals':
+		stat_list = []
+		player_name = div.find('div', class_='name').a
+		stat_list.append(player_name.string)
+		# player url
+		url = base_url + player_name['href']
+		general_data = div.find('div', class_='data')
+		for data in general_data:
+			if 'Height' in data.string:
+				stat_list.append(data.string[-4:])
+			else:
+				stat_list.append(data.string)
+		# get the statistics for player
+		r = requests.get(url)
+		soup = BeautifulSoup(r.text, 'html.parser')	
+		tds = soup.find_all('td', class_='PlayerTitleColumn')
+		for td in tds:
+			# here is the magic part, take all of the actual statistical data(FTs, FGs, 2PT, 3TP...) from 'Totals' category
+			if 'Totals' in td.string:
 				otherStats = td.parent
-				statList = []
 				for stat in otherStats:
 					if stat.string == 'Totals':
 						continue
 					elif stat.string.find(':') != -1:
-						statList.append(stat.string[:stat.string.find(':')])
+						# count only how many minutes player has played, cut the seconds
+						stat_list.append(stat.string[:stat.string.find(':')])
 					elif stat.string.find('/') != -1:
-						statList.append(stat.string[:stat.string.find('/')])
-						statList.append(stat.string[stat.string.find('/')+1:])
+						# unmerge the categories such as FT made/ FT attended in two columns
+						stat_list.append(stat.string[:stat.string.find('/')])
+						stat_list.append(stat.string[stat.string.find('/')+1:])
 					else:
-						statList.append(stat.string)
-				statList = filter(lambda glyph: glyph != u'\n', statList)
-				for i in range(len(statList) - 1 + column, column - 1, -1):
-					wb[team].cell(row = row, column = i, value = statList.pop())
+						# process all other data as it is
+						stat_list.append(stat.string)
+		# remove the unwanted new line characters from the list
+		stat_list = filter(lambda glyph: glyph != u'\n', stat_list)
+		for i in range(len(stat_list)):
+			wb[team].cell(row = row, column = i + 1, value = stat_list[i])
+		wb[team].cell(row = row, column = 1).hyperlink = url	
 		print('.'),
 		row += 1
 	print('Done')
