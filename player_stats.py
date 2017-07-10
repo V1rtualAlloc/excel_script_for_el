@@ -1,84 +1,92 @@
 # extract clubs info
-import requests
+import requests, re
 from openpyxl import Workbook
 from bs4 import BeautifulSoup
 
-url = 'http://www.euroleague.net/competition/teams'
-r = requests.get(url)
 
-soup = BeautifulSoup(r.text, "html.parser")
-tables = soup.find_all('ul', class_='nav-teams nav-teams-16')
+class Uleb:
+    """ initialize season, phase and ULEB competition """
+    def __init__(self, competition_website, season, phase):
+        self.competition_website = competition_website
+        self.season = season
+        self.phase = phase
+        self.teams = {'team name': [], 'team code': []}
+        self.workbook = Workbook()
+        self.workbook.active.title = 'Teams'
 
-teamsData = {
-    'teams': [],
-    'urls': []
-}
-for table in tables:
-    lis = table.find_all('li')
-    for li in lis:
-        anchor_tag = li.a
-        teamsData['teams'].append(anchor_tag["title"])
-        teamsData['urls'].append('http://www.euroleague.net' + str(anchor_tag["href"]))
+    def collect_teams(self):
+        url_all_teams = 'http://{0}/competition/teams?seasoncode={1}'
+        r = requests.get(url_all_teams.format(self.competition_website, self.season))
+        soup = BeautifulSoup(r.text, "html.parser")
+        l = soup.find('div', class_='teams').find_all('div', class_='RoasterName')
+        # find team names and codes
+        for item in l:
+            anchor_tag = item.a
+            self.teams['team name'].append(str(anchor_tag.string))
+            team_code_regex = re.search('clubcode=(.*)&', str(anchor_tag['href']))
+            team_code = team_code_regex.group(1)
+            self.teams['team code'].append(team_code)
+        # write to workbook
+        self.workbook.active.cell(row=1, column=1).value = 'Teams in season ' + season
+        for index, team_name in enumerate(self.teams['team name']):
+            self.workbook.active.cell(row=index + 2, column=1).value = team_name
 
-# write 'Teams' sheet in xlsx file
-wb = Workbook()
-ws = wb.active
-ws.title = 'Teams'
-ws.cell(row=1, column=1).value = 'Team'
-for cell in range(0, len(teamsData['teams'])):
-    ws.cell(row=cell + 2, column=1).value = teamsData['teams'][cell]
-    ws.cell(row=cell + 2, column=1).hyperlink = teamsData['teams'][cell]
+    def get_team_data(self):
+        url_team = 'http://{0}/competition/teams/showteam?clubcode={1}&seasoncode={2}'
+        for team_code in self.teams['team code']:
+            sheet = self.workbook.create_sheet(self.teams['team name'][self.teams['team code'].index(team_code)])
+            print(self.teams['team name'][self.teams['team code'].index(team_code)])
+            fields = ['Name', 'Position', 'Height', 'Date of Birth', 'Country',
+                      'G', 'MIN', 'PT', '2FGM', '2FGA', '3FGM', '3FGA', 'FTM', 'FTA',
+                      'ORB', 'DRB', 'TRB', 'ASS', 'STL', 'TO', 'BF', 'BA', 'FC', 'FR', 'PIR']
+            for field in fields:
+                sheet.cell(row=1, column=fields.index(field) + 1).value = field
+            r = requests.get(url_team.format(self.competition_website, team_code, self.season))
+            soup = BeautifulSoup(r.text, "html.parser")
+            players_info = soup.find_all(class_='item player')
+            for player in players_info:
+                player_info = player.find(class_='name').a
+                player_code_regex = re.search('pcode=(.*)&', str(player_info['href']))
+                player_code = player_code_regex.group(1)
+                print(player_info.string, player_code)
+                self.get_player_data(player_code, sheet)
+        self.workbook.save(self.phase + '.xlsx')
 
-for team in teamsData['teams']:
-    wb.create_sheet(team)
-    index = teamsData['teams'].index(team)
-    r = requests.get(str(teamsData['urls'][index]))
-    soup = BeautifulSoup(r.text, "html.parser")
-    divs = soup.find_all('div', class_='item player')
+    def get_player_data(self, player_code, sheet):
+        player_fields = list()
+        url_player = 'http://{0}/competition/players/showplayer?pcode={1}&seasoncode={2}#!{3}'
+        r = requests.get(url_player.format(self.competition_website, player_code, self.season, self.phase))
+        soup = BeautifulSoup(r.text, "html.parser")
+        # if the player has no stats whatsoever exit the method
+        if not soup.find(id=self.phase):
+            return
+        player_fields.append(soup.find(class_='player-data').find(class_='name').string)
+        player_fields.append(str(soup.find(class_='player-data').find(class_='summary-first').find_all('span').pop().string))
+        for item in soup.find(class_='player-data').find(class_='summary-second').find_all('span'):
+            player_code_regex = re.search(': (.*)', item.string)
+            player_code = player_code_regex.group(1)
+            player_fields.append(player_code)
+        l = soup.find(id=self.phase).find(class_='TotalFooter').find_all('td')
+        del l[1]
+        for td in l:
+            item = td.find('span')
+            if not str(item.string):
+                player_fields.append(0)
+            elif ':' in str(item.string):
+                player_fields.append(int(str(item.string[:item.string.find(':')])))
+            elif '/' in str(item.string):
+                player_fields.append(int(str(item.string[:item.string.find('/')])))
+                player_fields.append(int(str(item.string[item.string.find('/') + 1:])))
+            else:
+                player_fields.append(int(str(item.string)))
+        curent_empty_row = sheet.max_row + 1
+        for index, item in enumerate(player_fields):
+            sheet.cell(row=curent_empty_row, column=index+1).value = item
 
-    playerStats = ['Name', 'Jersey Number', 'Position', 'Country', 'Year of Birth', 'Height',
-                   'G', 'GS', 'MIN', 'PT', '2FGM', '2FGA', '3FGM', '3FGA', 'FTM', 'FTA',
-                   'ORB', 'DRB', 'TRB', 'ASS', 'STL', 'TO', 'BF', 'BA', 'FC', 'FR', 'PIR', 'PER']
-
-    for item in range(len(playerStats)):
-        wb[team].cell(row=1, column=item + 1).value = playerStats[item]
-
-    row = 2
-    print('Processing ' + team),
-    for div in divs:
-        name = div.find('div', class_='name').a
-        playerName = name.string
-        playerUrl = 'http://www.euroleague.net' + name['href']
-        wb[team].cell(row=row, column=1).value = playerName
-        wb[team].cell(row=row, column=1).hyperlink = playerUrl
-        data = div.find('div', class_='data')
-        wb[team].cell(row=row, column=2, value=data.find('span', class_='dorsal').string)
-        wb[team].cell(row=row, column=3, value=data.find('span', class_='position').string)
-        wb[team].cell(row=row, column=4, value=data.find('span', class_='country').string)
-        wb[team].cell(row=row, column=5, value=data.find('span', class_='birth').string)
-        wb[team].cell(row=row, column=6, value=data.find('span', class_='height').string[-4:])
-        column = 7
-        playerReq = requests.get(playerUrl)
-        playerHtml = BeautifulSoup(playerReq.text, "html.parser")
-        tds = playerHtml.find_all('td', class_='PlayerTitleColumn')
-        for td in tds:
-            if td.string == 'Totals':
-                otherStats = td.parent
-                statList = []
-                for stat in otherStats:
-                    if stat.string == 'Totals':
-                        continue
-                    elif stat.string.find(':') != -1:
-                        statList.append(stat.string[:stat.string.find(':')])
-                    elif stat.string.find('/') != -1:
-                        statList.append(stat.string[:stat.string.find('/')])
-                        statList.append(stat.string[stat.string.find('/') + 1:])
-                    else:
-                        statList.append(stat.string)
-                statList = filter(lambda glyph: glyph != u'\n', statList)
-                for i in range(len(statList) - 1 + column, column - 1, -1):
-                    wb[team].cell(row=row, column=i, value=int(statList.pop()))
-        print('.'),
-        row += 1
-    print('Done')
-wb.save('data.xlsx')
+euroleague = 'www.euroleague.net'
+uleb_cup='www.eurocupbasketball.com'
+season = 'U2016'
+phase = 'U2016_RS'
+obj = Uleb(uleb_cup, season, phase)
+obj.collect_teams()
+obj.get_team_data()
